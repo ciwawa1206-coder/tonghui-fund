@@ -145,11 +145,25 @@ fieldset.box legend{font-size:12px;color:var(--muted);padding:0 6px}
 </style>
 </head>
 <body>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<div id="cloudLogin" style="position:fixed;inset:0;background:linear-gradient(180deg,#0f3a2a,#155040);z-index:9999;display:flex;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:30px 28px;width:330px;max-width:92%;box-shadow:0 18px 50px rgba(0,0,0,.35)">
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-size:19px;font-weight:700;color:#0f3a2a">通惠典当行</div>
+      <div style="font-size:12px;color:#638074;margin-top:3px">资金管理后台 · 云同步版</div>
+    </div>
+    <div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:#638074;margin-bottom:4px">邮箱</label><input id="loginEmail" type="email" autocomplete="username" placeholder="登录邮箱" style="width:100%;padding:9px 11px;border:1px solid #d6e6dd;border-radius:8px;font-size:14px;outline:none" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div style="margin-bottom:8px"><label style="display:block;font-size:12px;color:#638074;margin-bottom:4px">密码</label><input id="loginPass" type="password" autocomplete="current-password" placeholder="登录密码" style="width:100%;padding:9px 11px;border:1px solid #d6e6dd;border-radius:8px;font-size:14px;outline:none" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div id="loginErr" style="color:#c0392b;font-size:12px;min-height:18px;margin:2px 0 8px"></div>
+    <button id="loginBtn" onclick="doLogin()" style="width:100%;padding:10px;background:#218a67;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer;font-weight:600">登 录</button>
+    <div style="text-align:center;font-size:11px;color:#638074;margin-top:12px">数据云端同步 · 多端访问保持一致</div>
+  </div>
+</div>
 <div id="app">
   <aside class="sidebar no-print">
     <div class="brand"><h1>通惠典当行</h1><p>资金管理后台</p></div>
     <nav class="nav" id="nav"><a data-p="dashboard" class="on" onclick="App.nav('dashboard')">首页·提醒中心</a><a data-p="flow" class="" onclick="App.nav('flow')">资金流水</a><a data-p="pawn" class="" onclick="App.nav('pawn')">典当管理</a><a data-p="financing" class="" onclick="App.nav('financing')">筹资管理</a><a data-p="fee" class="" onclick="App.nav('fee')">费用管理</a><a data-p="capital" class="" onclick="App.nav('capital')">初始投资资金</a><a data-p="customer" class="" onclick="App.nav('customer')">客户信息</a><a data-p="report" class="" onclick="App.nav('report')">报表中心</a><a data-p="data" class="" onclick="App.nav('data')">数据管理</a></nav>
-    <div class="side-foot">数据保存在本机浏览器<br>请定期备份数据</div>
+    <div class="side-foot"><span id="syncState" style="color:rgba(232,244,238,.75)">云端同步：待登录</span><br><a href="javascript:void(0)" onclick="doLogout()" style="color:rgba(232,244,238,.55);text-decoration:underline;font-size:11px">退出登录</a></div>
   </aside>
   <div class="main">
     <div class="topbar no-print">
@@ -174,6 +188,10 @@ fieldset.box legend{font-size:12px;color:var(--muted);padding:0 6px}
 'use strict';
 /* ================= 常量 ================= */
 const KEY='tonghui_fund_db_v1';
+/* ================= 云同步(Supabase) ================= */
+const SB_URL='https://dhhupqtuwlkpfvpsolyv.supabase.co';
+const SB_KEY='sb_publishable_EAzAYXbRqC9x0Ehv9tK24Q_9JlH4xPu';
+let sb=null;
 const CAT_IN=['当金利息收入','收回当金','黄金收益','收到筹资款','其他收入','股东投入'];
 const CAT_OUT=['筹资利息支出','当金支出','续当支出','支付筹资款','费用支出','退股东投入','无当票当金支出','与公司往来'];
 const CATS=CAT_IN.concat(CAT_OUT);
@@ -279,8 +297,84 @@ function loadDB(){
 }
 function saveDB(){
   try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){toast('注意：浏览器本地存储不可用，请及时导出备份')}
+  cloudSaveDebounced();
 }
 let DB=loadDB();
+/* ---------- 云端读写 ---------- */
+let _cloudTimer=null,cloudReady=false;
+function cloudSaveDebounced(){
+  if(!cloudReady)return;
+  if(_cloudTimer)clearTimeout(_cloudTimer);
+  _cloudTimer=setTimeout(cloudSaveNow,800);
+}
+async function cloudSaveNow(){
+  if(!cloudReady||!sb)return;
+  try{
+    const{error}=await sb.from('app_state').upsert({id:'main',data:DB,updated_at:new Date().toISOString()});
+    if(error)throw error;
+    const el=document.getElementById('syncState');if(el){el.textContent='已同步 '+new Date().toLocaleTimeString();el.style.color='rgba(232,244,238,.75)'}
+  }catch(e){
+    const el=document.getElementById('syncState');if(el){el.textContent='同步失败(已存本机)';el.style.color='#ffb4a8'}
+  }
+}
+async function cloudLoad(){
+  try{
+    const{data,error}=await sb.from('app_state').select('data,updated_at').eq('id','main').maybeSingle();
+    if(error)throw error;
+    if(data&&data.data&&data.data.settings&&data.data.transactions){
+      DB=data.data;
+      try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}
+      return true
+    }
+    await cloudSaveNow();
+    return false
+  }catch(e){
+    toast('云端数据加载失败：'+(e.message||'网络错误'));
+    return false
+  }
+}
+async function doLogin(){
+  const email=(document.getElementById('loginEmail').value||'').trim();
+  const pass=document.getElementById('loginPass').value||'';
+  const err=document.getElementById('loginErr');
+  err.textContent='';
+  if(!email||!pass){err.textContent='请输入邮箱和密码';return}
+  const btn=document.getElementById('loginBtn');
+  btn.disabled=true;btn.textContent='登录中…';
+  try{
+    const{error}=await sb.auth.signInWithPassword({email,password:pass});
+    if(error)throw error;
+    await cloudLoad();
+    cloudReady=true;
+    document.getElementById('cloudLogin').style.display='none';
+    renderNav();renderPage();
+    toast('已连接云端，多端同步开启');
+  }catch(e){
+    err.textContent=(e.message||'登录失败，请检查邮箱和密码');
+  }
+  btn.disabled=false;btn.textContent='登 录';
+}
+async function doLogout(){
+  if(!confirm('确认退出登录？本机数据保留，下次登录可继续同步'))return;
+  try{await sb.auth.signOut()}catch(e){}
+  location.reload();
+}
+async function initCloud(){
+  try{
+    sb=window.supabase.createClient(SB_URL,SB_KEY);
+    const{data:{session}}=await sb.auth.getSession();
+    if(session){
+      await cloudLoad();
+      cloudReady=true;
+      document.getElementById('cloudLogin').style.display='none';
+      renderNav();renderPage();
+      toast('已连接云端，多端同步开启');
+    }
+  }catch(e){
+    const err=document.getElementById('loginErr');
+    if(err)err.textContent='云服务连接异常，请稍后刷新重试';
+  }
+}
 let UI={page:'dashboard',rtab:'flow',ftab:'detail',ryear:'',rmonth:'',rcust:'',rperson:''};
 
 function custById(id){return DB.customers.find(c=>c.id===id)}
@@ -3847,6 +3941,7 @@ const App={
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
 renderNav();
 renderPage();
+initCloud();
 </script>
 
 
