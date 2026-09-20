@@ -367,10 +367,10 @@ async function doLogin(){
     if(!remember){try{Object.keys(localStorage).filter(k=>k.indexOf('sb-')===0).forEach(k=>localStorage.removeItem(k))}catch(e){}}
     const{error}=await sb.auth.signInWithPassword({email,password:pass});
     if(error)throw error;
-    await cloudLoad();
     cloudReady=true;
+    try{await cloudLoad()}catch(e){}
     document.getElementById('cloudLogin').style.display='none';
-    renderNav();renderPage();
+    try{renderNav();renderPage()}catch(e){}
     toast(remember?'登录成功，下次自动进入':'登录成功（关闭浏览器后需重新登录）');
   }catch(e){
     err.textContent=(e.message||'登录失败，请检查邮箱和密码');
@@ -392,23 +392,21 @@ function showLoginForm(msg){
 }
 async function initCloud(){
   const overlay=document.getElementById('cloudLogin');
+  let session=null;
   try{
     if(!window.supabase){showLoginForm('依赖库加载失败，请检查网络后刷新重试');return}
     sb=makeClient();
-    let session=null;
     try{session=(await sb.auth.getSession()).data.session}catch(e){}
     if(!session){await new Promise(r=>setTimeout(r,80));try{session=(await sb.auth.getSession()).data.session}catch(e){}}
-    if(session){
-      await cloudLoad();
-      cloudReady=true;
-      overlay.style.display='none';
-      renderNav();renderPage();
-      return;
-    }
-    showLoginForm('');
   }catch(e){
-    showLoginForm(window.supabase?'云服务连接异常，请刷新重试':'依赖库加载失败，请检查网络后刷新重试');
+    if(!session){showLoginForm(window.supabase?'云服务连接异常，请刷新重试':'依赖库加载失败，请检查网络后刷新重试');return}
   }
+  if(!session){showLoginForm('');return}
+  /* 已恢复登录：先关掉登录页，再做渲染；渲染异常绝不回退到登录页 */
+  cloudReady=true;
+  try{await cloudLoad()}catch(e){}
+  if(overlay)overlay.style.display='none';
+  try{renderNav();renderPage()}catch(e){}
 }
 let UI={page:'dashboard',rtab:'flow',ftab:'detail',ryear:'',rmonth:'',rcust:'',rperson:''};
 
