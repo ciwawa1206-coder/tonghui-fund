@@ -329,7 +329,9 @@ async function cloudLoad(){
     await cloudSaveNow();
     return false
   }catch(e){
-    toast('云端数据加载失败：'+(e.message||'网络错误'));
+    const m=(e&&e.message)||'网络错误';
+    const miss=/app_state|schema cache|does not exist|PGRST205/i.test(m);
+    toast('云端数据加载失败：'+m+(miss?'（数据表尚未创建，请在 Supabase 运行建表语句）':''));
     return false
   }
 }
