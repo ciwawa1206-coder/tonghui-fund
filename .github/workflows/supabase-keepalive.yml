@@ -1,0 +1,29 @@
+name: Supabase Keepalive
+
+# 每周一、周四各执行一次真实数据库写入，防止免费版项目因 7 天无活跃被自动暂停
+on:
+  schedule:
+    - cron: "30 22 * * 0,3"   # 周日、周三 UTC 22:30（北京时间周一、周四早上 6:30）
+  workflow_dispatch:           # 允许在 Actions 页面手动触发测试
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write keepalive row to Supabase
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "未配置 SUPABASE_DB_URL secret，请按仓库 README 设置"; exit 1
+          fi
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE IF NOT EXISTS _keepalive (
+            id int PRIMARY KEY,
+            touched_at timestamptz NOT NULL DEFAULT now()
+          );
+          INSERT INTO _keepalive (id, touched_at)
+          VALUES (1, now())
+          ON CONFLICT (id) DO UPDATE SET touched_at = now();
+          SQL
+          echo "keepalive 写入成功: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
