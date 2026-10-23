@@ -173,6 +173,7 @@ Resources:`;for(let t of c){if(!t||typeof t!=`string`)throw Error(`@supabase/aut
     <div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:#638074;margin-bottom:4px">邮箱</label><input id="loginEmail" type="email" autocomplete="username" placeholder="登录邮箱" style="width:100%;padding:9px 11px;border:1px solid #d6e6dd;border-radius:8px;font-size:14px;outline:none" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div style="margin-bottom:8px"><label style="display:block;font-size:12px;color:#638074;margin-bottom:4px">密码</label><input id="loginPass" type="password" autocomplete="current-password" placeholder="登录密码" style="width:100%;padding:9px 11px;border:1px solid #d6e6dd;border-radius:8px;font-size:14px;outline:none" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:#4a6b5d;margin:0 0 12px;cursor:pointer;user-select:none"><input id="loginRemember" type="checkbox" checked style="width:15px;height:15px;accent-color:#218a67">下次自动登录（记住我）</label>
+    <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:#4a6b5d;margin:0 0 4px;cursor:pointer;user-select:none" title="密码只保存在本机浏览器里，不进代码、不上传服务器；换电脑或清除浏览器数据后需重新登录"><input id="loginSavePass" type="checkbox" style="width:15px;height:15px;accent-color:#218a67">本机记住密码（打开直接进，免输账密）</label>
     <div id="loginErr" style="color:#c0392b;font-size:12px;min-height:18px;margin:2px 0 8px"></div>
     <button id="loginBtn" onclick="doLogin()" style="width:100%;padding:10px;background:#218a67;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer;font-weight:600">登 录</button>
     <div style="text-align:center;font-size:11px;color:#638074;margin-top:12px">数据云端同步 · 多端访问保持一致</div>
@@ -215,6 +216,13 @@ let sb=null;
 /* 自动登录：勾选"记住我"→ 会话存 localStorage（关浏览器也在）；不勾 → 只存本标签页 */
 const REMEMBER_KEY='th_remember';
 function rememberPref(){try{return localStorage.getItem(REMEMBER_KEY)!=='0'}catch(e){return true}}
+/* 本机记住密码：仅存本机浏览器 localStorage（不进代码、不上传服务器/仓库），轻度混淆防瞄一眼就看到 */
+const SAVED_CRED_KEY='th_saved_cred';
+function encPw(s){try{return btoa(unescape(encodeURIComponent(('th~'+s).split('').map((c,i)=>String.fromCharCode(c.charCodeAt(0)^(31+i%17))).join(''))))}catch(e){return''}}
+function decPw(s){try{const r=decodeURIComponent(escape(atob(s))).split('').map((c,i)=>String.fromCharCode(c.charCodeAt(0)^(31+i%17))).join('');return r.slice(0,3)==='th~'?r.slice(3):''}catch(e){return''}}
+function getSavedCred(){try{const raw=localStorage.getItem(SAVED_CRED_KEY);if(!raw)return null;const o=JSON.parse(raw);const p=decPw(o.p||'');return p?{email:o.e||'',pass:p}:null}catch(e){return null}}
+function saveCred(email,pass){try{localStorage.setItem(SAVED_CRED_KEY,JSON.stringify({e:email,p:encPw(pass)}))}catch(e){}}
+function clearSavedPass(){try{localStorage.removeItem(SAVED_CRED_KEY)}catch(e){}}
 const hybridStorage={
   getItem:function(k){try{const s=sessionStorage.getItem(k);if(s!==null)return s}catch(e){}try{return localStorage.getItem(k)}catch(e){return null}},
   setItem:function(k,v){try{(rememberPref()?localStorage:sessionStorage).setItem(k,v)}catch(e){}},
@@ -392,6 +400,11 @@ async function doLogin(){
       }
     }
     if(lastErr)throw lastErr;
+    // 本机记住密码：勾选则保存（仅本机浏览器），未勾选则清除已存密码
+    try{
+      const sp=document.getElementById('loginSavePass');
+      if(sp&&sp.checked)saveCred(email,pass);else clearSavedPass();
+    }catch(e2){}
     cloudReady=true;
     try{await cloudLoad()}catch(e){}
     document.getElementById('cloudLogin').style.display='none';
@@ -399,10 +412,11 @@ async function doLogin(){
     toast(remember?'登录成功，下次自动进入':'登录成功（关闭浏览器后需重新登录）');
   }catch(e){
     const m=e.message||'登录失败，请检查邮箱和密码';
-    if(/fetch|network|Failed to fetch/i.test(m)){
-      err.textContent='连接云端失败（网络请求被拦截或代理干扰）。请：①关闭浏览器的代理/加速器后重试；②检查360等安全软件是否拦截；③换 Chrome/Edge 试试。';
-    }else if(/Invalid login|invalid credentials/i.test(m)){
+    if(/Invalid login|invalid credentials/i.test(m)){
       err.textContent='邮箱或密码不正确，请重新输入';
+      clearSavedPass(); // 已存密码失效则清除，避免反复自动失败
+    }else if(/fetch|network|Failed to fetch/i.test(m)){
+      err.textContent='连接云端失败（网络请求被拦截或代理干扰）。请：①关闭浏览器的代理/加速器后重试；②检查360等安全软件是否拦截；③换 Chrome/Edge 试试。';
     }else{
       err.textContent=m;
     }
@@ -410,7 +424,8 @@ async function doLogin(){
   btn.disabled=false;btn.textContent='登 录';
 }
 async function doLogout(){
-  if(!confirm('确认退出登录？本机数据保留，下次登录可继续同步'))return;
+  if(!confirm('确认退出登录？将同时清除本机记住的密码，下次需重新输入'))return;
+  clearSavedPass();
   try{await sb.auth.signOut()}catch(e){}
   location.reload();
 }
@@ -418,8 +433,11 @@ function showLoginForm(msg){
   const c=document.getElementById('loginChecking'),f=document.getElementById('loginForm');
   if(c)c.style.display='none';
   if(f)f.style.display='block';
-  try{const e=document.getElementById('loginEmail');if(e&&!e.value)e.value=localStorage.getItem('th_last_email')||''}catch(e2){}
+  const cred=getSavedCred();
+  try{const e=document.getElementById('loginEmail');if(e&&!e.value)e.value=(cred&&cred.email)||localStorage.getItem('th_last_email')||''}catch(e2){}
+  try{const p=document.getElementById('loginPass');if(p&&!p.value&&cred)p.value=cred.pass}catch(e2){}
   try{const r=document.getElementById('loginRemember');if(r)r.checked=rememberPref()}catch(e2){}
+  try{const sp=document.getElementById('loginSavePass');if(sp)sp.checked=!!cred}catch(e2){}
   const err=document.getElementById('loginErr');if(err)err.textContent=msg||'';
 }
 async function initCloud(){
@@ -433,7 +451,19 @@ async function initCloud(){
   }catch(e){
     if(!session){showLoginForm(window.supabase?'云服务连接异常，请刷新重试':'依赖库加载失败，请检查网络后刷新重试');return}
   }
-  if(!session){showLoginForm('');return}
+  if(!session){
+    // 本机记住过密码 → 自动填好并直接登录，全程免输入
+    const cred=getSavedCred();
+    if(cred){
+      showLoginForm('');
+      const le=document.getElementById('loginEmail'),lp=document.getElementById('loginPass');
+      if(le)le.value=cred.email;
+      if(lp)lp.value=cred.pass;
+      try{await doLogin()}catch(e){}
+      return;
+    }
+    showLoginForm('');return;
+  }
   /* 已恢复登录：先关掉登录页，再做渲染；渲染异常绝不回退到登录页 */
   cloudReady=true;
   try{await cloudLoad()}catch(e){}
@@ -583,38 +613,30 @@ function finStats(f){
   const balance=f.excludeFromBalance?0:(f.amount-refunded);
   const periods=finPeriods(f);
   const accrued=periods.reduce((s,p)=>s+p.accrued,0);
-  // 本人全部付息合计，按「最早期初欠付 → 最早期末欠付」顺序逐笔冲减（以 2026-09 为基准月，之前的欠息期优先）
   const custId=f.customerId||'';
   const custTxs=finPayTxsByCust(custId);
   const custPaid=custTxs.reduce((s,t)=>s+t.amount,0);
-  const grp=DB.financing.filter(x=>(x.customerId||'')===custId&&!x.excludeFromBalance)
+  // 冲减规则：
+  // ① 期初已付利息(initPaidInterest)是旧账导入基线，直接归属各自筹资，不占流水池；
+  // ② 付息流水按筹资日期先后，从最早一笔的「剩余欠息(应计-期初已付)」开始冲减，上限为该笔应计；
+  // ③ 冲减后仍有剩余（超额支付、或该笔未设利率应计为0）→ 挂到最新一笔筹资，确保「利息支付合计」不丢真实付款。
+  const grp=DB.financing.filter(x=>(x.customerId||'')===custId)
     .sort((a,b)=>cmpISO(a.date||a.accStartDate||'',b.date||b.accStartDate||''));
   let alloc=custPaid;
-  let paid=0;
-  grp.forEach(x=>{
-    const st=allocFinPaid(x,alloc,custTxs);
-    if(x.id===f.id)paid=st;
-    alloc=Math.max(0,alloc-st);
+  const allocs=grp.map(x=>{
+    const initPI=num(x.initPaidInterest);
+    const xAccrued=finPeriods(x).reduce((s,p)=>s+p.accrued,0);
+    const room=Math.max(0,xAccrued-initPI);
+    const use=Math.max(0,Math.min(alloc,room));
+    alloc=Math.max(0,alloc-use);
+    return{initPI:initPI,use:use};
   });
+  if(alloc>0&&allocs.length)allocs[allocs.length-1].use+=alloc;
+  let paid=0;
+  grp.forEach((x,i)=>{if(x.id===f.id)paid=allocs[i].initPI+allocs[i].use});
   const owed=Math.max(0,accrued-paid);
   const monthlyNow=balance>0?Math.round(balance*f.monthlyRate/100):0;
   return{paid:paid,refunded:refunded,balance:balance,periods:periods,accrued:accrued,owed:owed,monthlyNow:monthlyNow,paidAfter:custPaid,custPaid:custPaid};
-}
-/* 把「可用于冲减的金额 avail」分配给单笔筹资的各个计息期，返回冲减到该笔的金额
-   规则：从到期最早的期数开始冲减；若该笔已退款结清，则最早期数直接作废（不计应收、也不占用付款） */
-function allocFinPaid(f,avail,custTxs){
-  const periods=finPeriods(f);
-  if(!periods.length)return 0;
-  const bal=f.excludeFromBalance?0:(f.amount-((f.initRefunded||0)+Math.max(txSum('支付筹资款','financingId',f.id),(f.refundDetails||[]).reduce((s,r)=>s+(r.amount||0),0))));
-  const sorted=periods.slice().sort((a,b)=>a.from<b.from?-1:(a.from>b.from?1:0));
-  let left=avail||0,done=0;
-  for(let i=0;i<sorted.length;i++){
-    const p=sorted[i];
-    const use=Math.max(0,Math.min(left,p.accrued));
-    done+=use;left-=use;
-    if(bal<=0)break; // 已结清：只保留最早欠息期核销，其后各期不再占用付款
-  }
-  return done;
 }
 function finStatusAuto(f){
   const st=finStats(f);
@@ -951,13 +973,18 @@ function getFinIdFromText(txt){
 }
 function txLinkSync(){
   const cat=fv('tx_cat');
-  if(TX_NEED_FIN.indexOf(cat)>=0&&cat!=='筹资利息支出'){
+  if(TX_NEED_FIN.indexOf(cat)>=0){
     const cid=fv('tx_cust');
     const inp=$('#tx_fin');
-    if(cid&&inp){
+    if(inp){
       const finId=getFinIdFromText(inp.value);
       const f=finId?DB.financing.find(x=>x.id===finId):null;
-      if(!f||f.customerId!==cid){
+      if(cat==='筹资利息支出'){
+        // 按总额付息：选了某笔筹资（或任何该人筹资）就自动带出筹资人，客户为空时回填
+        if(f&&!cid){const sel=$('#tx_cust');if(sel)sel.value=f.customerId}
+        return;
+      }
+      if(cid&&f&&f.customerId!==cid){
         const match=DB.financing.find(x=>x.customerId===cid);
         if(match)inp.value=match.no+' · '+custName(match.customerId)+' · '+fmt(match.amount);
       }
@@ -990,6 +1017,14 @@ function saveTx(id){
     financingId:(TX_NEED_FIN.indexOf(cat)>=0&&cat!=='筹资利息支出')?getFinIdFromText(fv('tx_fin')):'',
     feeItem:cat==='费用支出'?fv('tx_fee'):'',note:fv('tx_note').trim()};
   if(cat==='费用支出'&&!obj.feeItem){toast('请选择费用项目');return}
+  // 筹资利息支出必须归属到筹资人：客户没选时，从「关联筹资」自动带出；再没有则拦下，避免无主流水不计入已付利息
+  if(cat==='筹资利息支出'){
+    if(!obj.customerId){
+      const fid=getFinIdFromText(fv('tx_fin'));
+      if(fid){const ff=DB.financing.find(x=>x.id===fid);if(ff)obj.customerId=ff.customerId}
+    }
+    if(!obj.customerId){toast('「筹资利息支出」必须选择筹资人：请在「客户」下拉选择，或在「关联筹资」里选一笔筹资');return}
+  }
   if(id){const i=DB.transactions.findIndex(x=>x.id===id);DB.transactions[i]=obj}
   else DB.transactions.push(obj);
   saveDB();closeModal();toast('已保存');renderPage();
