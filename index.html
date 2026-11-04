@@ -2599,7 +2599,7 @@ function rptProfit(){
   const allP=profitOf(DB.transactions);
   return '<div class="card">'+
   '<h3><span>利润表</span><span class="tools no-print">'+yearSelAll()+monthSel()+
-  '<button class="btn ghost no-print" onclick="App.expProfit()">导出Excel</button><button class="btn ghost no-print" onclick="window.print()">打印</button></span></h3>'+
+  '<button class="btn ghost no-print" onclick="App.expProfit()">导出Excel</button><button class="btn ghost no-print" onclick="App.intDiagShow()">利息对账诊断</button><button class="btn ghost no-print" onclick="window.print()">打印</button></span></h3>'+
   '<div class="rpt-sub">'+label+'　含期初已收/已付利息　本金往来不计入损益</div>'+
   '<div class="tblwrap" style="max-width:560px"><table class="tbl"><thead><tr><th>项目</th><th class="num">金额（元）</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
   '<div class="grid g3" style="margin-top:12px">'+
@@ -2617,6 +2617,85 @@ function expProfit(){
   if(p.ro)rows.push(['续当支出',p.ro]);
   rows.push(['费用合计',p.expense],['四、利润',p.profit],['累计利润',profitOf(DB.transactions).profit]);
   exportXLS('利润表','利润表',rows);
+}
+/* ---- 利息对账诊断：利润表累计口径 vs 台账汇总口径 ----
+   利润表：全部流水直接求和（含导入补录 noFlow 流水）
+   汇总表：筹资=期初已付利息+归属到筹资人的正常付息流水；典当=期初已收利息+关联到当票的收息流水
+   本诊断列出所有"利润表计入、汇总表没统计到"以及"汇总表计入、利润表没有流水"的明细 */
+function intDiagData(){
+  const finById={};DB.financing.forEach(f=>finById[f.id]=f);
+  const tkById={};DB.tickets.forEach(t=>tkById[t.id]=t);
+
+  // —— 筹资利息支出 ——
+  const finFlows=DB.transactions.filter(t=>t.category==='筹资利息支出');
+  const finProfit=finFlows.reduce((s,t)=>s+t.amount,0);
+  const finSummary=DB.financing.filter(f=>!f.noFlow).reduce((s,f)=>s+finStats(f).paid,0);
+  const finItems=[];
+  finFlows.forEach(t=>{
+    const f=t.financingId?finById[t.financingId]:null;
+    const cid=t.customerId||(f?f.customerId:'');
+    if(t.noFlow){finItems.push({date:t.date,summary:t.summary||'付息',who:custName(cid)||'(空)',amount:t.amount,reason:'导入补录流水(noFlow)，汇总表不统计'});return}
+    if(!cid){finItems.push({date:t.date,summary:t.summary||'付息',who:'(未选筹资人)',amount:t.amount,reason:'无主流水：没选筹资人，汇总表无法归属'});return}
+    if(!DB.financing.some(x=>(x.customerId||'')===cid&&!x.noFlow)){finItems.push({date:t.date,summary:t.summary||'付息',who:custName(cid),amount:t.amount,reason:'该筹资人名下没有汇总表显示的筹资记录，付款未计入'});return}
+  });
+  DB.financing.filter(f=>!f.noFlow&&num(f.initPaidInterest)>0).forEach(f=>{
+    finItems.push({date:f.date,summary:'期初已付利息',who:custName(f.customerId),amount:num(f.initPaidInterest),reason:'期初基线：汇总表计入，但无对应流水（不从差额中扣除）',base:true});
+  });
+
+  // —— 当金利息收入 ——
+  const pawnFlows=DB.transactions.filter(t=>t.category==='当金利息收入');
+  const pawnProfit=pawnFlows.reduce((s,t)=>s+t.amount,0);
+  const pawnSummary=DB.tickets.reduce((s,t)=>s+ticketStats(t).received,0);
+  const pawnItems=[];
+  pawnFlows.forEach(t=>{
+    if(!t.ticketId){pawnItems.push({date:t.date,summary:t.summary||'收息',who:custName(t.customerId)||'(空)',amount:t.amount,reason:'收息流水未关联当票，汇总表无法归属'});return}
+    if(!tkById[t.ticketId]){pawnItems.push({date:t.date,summary:t.summary||'收息',who:custName(t.customerId)||'(空)',amount:t.amount,reason:'关联的当票已删除，汇总表无法归属'});return}
+  });
+  DB.tickets.filter(t=>num(t.initReceivedInterest)>0).forEach(t=>{
+    pawnItems.push({date:t.pawnDate,summary:'期初已收利息('+(t.no||'')+')',who:custName(t.customerId),amount:num(t.initReceivedInterest),reason:'期初基线：汇总表计入，但无对应流水（不从差额中扣除）',base:true});
+  });
+
+  // 差额核对：gap = 利润表 − 汇总；已解释 = Σ漏计流水 − Σ基线
+  const finExplained=finItems.reduce((s,x)=>s+(x.base?-x.amount:x.amount),0);
+  const pawnExplained=pawnItems.reduce((s,x)=>s+(x.base?-x.amount:x.amount),0);
+  return{
+    finProfit:finProfit,finSummary:finSummary,finGap:finProfit-finSummary,finItems:finItems,finResidual:(finProfit-finSummary)-finExplained,
+    pawnProfit:pawnProfit,pawnSummary:pawnSummary,pawnGap:pawnProfit-pawnSummary,pawnItems:pawnItems,pawnResidual:(pawnProfit-pawnSummary)-pawnExplained
+  };
+}
+function intDiagShow(){
+  const d=intDiagData();
+  const tbl=(items,gap,residual,label)=>{
+    let h='<div style="margin-top:12px;font-weight:bold;font-size:13px">'+label+'：利润表累计 <span style="color:#c00">'+fmt(gap>0?gap:0)+'</span> 元 vs 汇总表合计，差额 <span class="'+(Math.abs(gap)>0.5?'red':'')+'">'+fmt(gap)+'</span> 元</div>';
+    h+='<table class="tbl" style="font-size:12px;margin-top:6px"><thead><tr><th>日期</th><th>摘要</th><th>客户</th><th class="num">金额</th><th>原因</th></tr></thead><tbody>';
+    const flows=items.filter(x=>!x.base),bases=items.filter(x=>x.base);
+    if(flows.length)flows.forEach(x=>{h+='<tr><td>'+dispD(x.date)+'</td><td>'+esc(x.summary)+'</td><td>'+esc(x.who)+'</td><td class="num">'+fmt(x.amount)+'</td><td>'+esc(x.reason)+'</td></tr>'});
+    else h+='<tr><td colspan="5" class="muted">没有漏计流水 ✔</td></tr>';
+    if(bases.length)bases.forEach(x=>{h+='<tr><td>'+dispD(x.date)+'</td><td>'+esc(x.summary)+'</td><td>'+esc(x.who)+'</td><td class="num">'+fmt(x.amount)+'</td><td class="muted">'+esc(x.reason)+'</td></tr>'});
+    if(Math.abs(residual)>0.5)h+='<tr class="sum"><td colspan="3">其他口径差（无法逐笔归类的部分）</td><td class="num">'+fmt(residual)+'</td><td class="muted">多发生在筹资人名下同时有导入辅助记录等混合场景</td></tr>';
+    h+='</tbody></table>';
+    return h;
+  };
+  let html='<div class="hint">口径说明：利润表按「全部流水」求和；汇总表按「期初基线 + 归属到人/当票的流水」求和。下面列出两边不一致的每一笔。</div>';
+  html+=tbl(d.finItems,d.finGap,d.finResidual,'筹资利息支出');
+  html+=tbl(d.pawnItems,d.pawnGap,d.pawnResidual,'当金利息收入');
+  if(Math.abs(d.finGap)<=0.5&&Math.abs(d.pawnGap)<=0.5)html='<div style="font-size:13px;color:#080;font-weight:bold">✓ 两张口径完全一致，没有差异。</div>';
+  openModal('利息对账诊断（利润表 vs 汇总表）',html,
+    '<button class="btn" onclick="App.expIntDiag()">导出Excel</button><button class="btn ghost" onclick="App.closeModal()">关闭</button>');
+}
+function expIntDiag(){
+  const d=intDiagData();
+  const rows=[['类别','日期','摘要','客户','金额','原因']];
+  const push=(label,items)=>{items.forEach(x=>rows.push([label,dispD(x.date),x.summary,x.who,x.amount,x.base?'(期初基线，汇总计入/利润表无流水)':x.reason]))};
+  push('筹资利息支出-漏计',d.finItems.filter(x=>!x.base));
+  push('筹资利息支出-期初基线',d.finItems.filter(x=>x.base));
+  push('当金利息收入-漏计',d.pawnItems.filter(x=>!x.base));
+  push('当金利息收入-期初基线',d.pawnItems.filter(x=>x.base));
+  rows.push(['','','筹资差额(利润表-汇总)',,d.finGap,'']);
+  rows.push(['','','当金差额(利润表-汇总)',,d.pawnGap,'']);
+  rows.push(['','','筹资其他口径差',,d.finResidual,'']);
+  rows.push(['','','当金其他口径差',,d.pawnResidual,'']);
+  exportXLS('利息对账诊断','利息对账诊断（利润表累计 vs 汇总表合计）',rows);
 }
 
 /* ================= 弹窗 / 导出基础 ================= */
@@ -4126,7 +4205,7 @@ const App={
   disposeForfeit:disposeForfeit,saveDispose:saveDispose,delForfeit:delForfeit,
   setRTab:setRTab,setFeeTab:setFeeTab,setRYear:setRYear,setRMonth:setRMonth,setRCust:setRCust,setRPerson:setRPerson,setRPawn:setRPawn,searchPawn:searchPawn,searchCustPawn:searchCustPawn,searchFinPerson:searchFinPerson,prevPawnPerson:prevPawnPerson,nextPawnPerson:nextPawnPerson,prevCustPawn:prevCustPawn,nextCustPawn:nextCustPawn,
   expFlow:expFlow,expCustPawn:expCustPawn,expFinSummary:expFinSummary,expFinPerson:expFinPerson,expPawnPerson:expPawnPerson,
-  expFee:expFee,expFeeSummary:expFeeSummary,expSummary:expSummary,expSources:expSources,expProfit:expProfit,
+  expFee:expFee,expFeeSummary:expFeeSummary,expSummary:expSummary,expSources:expSources,expProfit:expProfit,intDiagShow:intDiagShow,expIntDiag:expIntDiag,
   expPawnReminder:expPawnReminder,expFinReminder:expFinReminder,expDueReminder:expDueReminder,
   closeModal:closeModal,saveSettings:saveSettings,addFeeItem:addFeeItem,delFeeItem:delFeeItem,
   impFile:impFile,impParse:impParse,impConfirm:impConfirm,expData:expData,
