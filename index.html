@@ -259,7 +259,13 @@ let _neonQ=null;  // Neon 查询函数（惰性创建）
 function neonInit(){
   if(!_neonQ){
     if(typeof WebSocket!=='undefined')NeonDB.neonConfig.webSocketConstructor=WebSocket;
-    _neonQ=NeonDB.neon(NEON_URL);
+    const _sql=NeonDB.neon(NEON_URL);
+    /* 兼容包装：常规调用 sql('SELECT $1',[v]) 走 _sql.query；标签模板 sql`...` 走原函数 */
+    _neonQ=function(text,params){
+      if(Array.isArray(text)&&typeof text.raw==='string')return _sql(text,...params);
+      return _sql.query(text,params);
+    };
+    _neonQ.query=function(t,p){return _sql.query(t,p)};
   }
   return _neonQ;
 }
